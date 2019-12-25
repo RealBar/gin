@@ -33,11 +33,11 @@ func TestProfile(t *testing.T) {
 		c.String(http.StatusOK, "it worked")
 	})
 	assert.NoError(t, EnablePeriodicallyProfile(&profile.Option{
-		Y:          10 * time.Second,
-		X:          3 * time.Second,
-		StoreDir:   "/tmp/profiles",
-		Compress:   true,
-		MaxFileNum: 100,
+		Y:             10 * time.Second,
+		X:             3 * time.Second,
+		StoreDir:      "/tmp/profiles",
+		Compress:      true,
+		ArchivePolicy: &profile.FileNumArchivePolicy{MaxFileNum: 5},
 	}, profile.Cpu, profile.Goroutine))
 	go func() {
 		router.GET("/example", func(c *Context) { c.String(http.StatusOK, "it worked") })
@@ -46,7 +46,7 @@ func TestProfile(t *testing.T) {
 	go func() {
 		testConcurrentRequest(t, "http://localhost:5150/test", 4)
 	}()
-	time.Sleep(24 * time.Second)
+	time.Sleep(2 * time.Minute)
 	fmt.Println("Sleep finished")
 }
 

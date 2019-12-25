@@ -28,7 +28,7 @@ var profileCollection = map[Profile]struct{}{Cpu: {}, Heap: {}, ThreadCreate: {}
 var profileOnceLock sync.Once
 var defaultFormat = &Format{
 	FileNameFormat: "{type}_{timestamp}.profile",
-	TimeFormat:     "2006-01-02T15:04:05.000Z07:00",
+	TimeFormat:     defaultTimeFormat,
 }
 var manager *profileManager
 
@@ -98,6 +98,12 @@ func EnableProfile(opt *Option, profiles ...Profile) error {
 		if manager.Compress {
 			manager.archiveDir = path.Join(manager.StoreDir, "archive")
 			manager.err = createDirIfNotExists(manager.archiveDir)
+			if manager.FileFormat == nil {
+				manager.FileFormat = defaultFormat
+			}
+			if manager.ArchivePolicy == nil {
+				manager.ArchivePolicy = &FileNumArchivePolicy{}
+			}
 		}
 	})
 	if manager.err != nil {
@@ -126,12 +132,7 @@ func checkOpt(opt Option, profiles []Profile) error {
 	if len(profiles) == 0 {
 		return errors.New("no profile set")
 	}
-	if opt.FileFormat == nil {
-		opt.FileFormat = defaultFormat
-	}
-	if opt.ArchivePolicy == nil {
-		opt.ArchivePolicy = &FileNumArchivePolicy{}
-	}
+
 	return createDirIfNotExists(opt.StoreDir)
 }
 
@@ -157,7 +158,6 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 		m.errorLog("open file failed", err)
 		return
 	}
-	defer m.addFileCollection(filePath)
 	defer file.Close()
 	switch profile {
 	case Cpu:
@@ -167,6 +167,7 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 			return
 		}
 		m.infoLog("StartCPUProfile succeed")
+		defer m.addFileCollection(filePath)
 		defer pprof.StopCPUProfile()
 	case Trace:
 		err = trace.Start(m.ErrLogOutput)
@@ -175,6 +176,7 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 			return
 		}
 		m.infoLog("trace.Start succeed")
+		defer m.addFileCollection(filePath)
 		defer trace.Stop()
 	}
 	time.Sleep(m.X)
@@ -187,6 +189,7 @@ func (m *profileManager) doInstantProfile(profile Profile) {
 		m.errorLog("open file failed", err)
 		return
 	}
+	defer m.addFileCollection(filePath)
 	defer file.Close()
 	p := pprof.Lookup(string(profile))
 	err = p.WriteTo(file, 0)
@@ -195,7 +198,6 @@ func (m *profileManager) doInstantProfile(profile Profile) {
 		return
 	}
 	m.infoLog(fmt.Sprintf("%s profile finished", string(profile)))
-	m.addFileCollection(filePath)
 }
 func (m *profileManager) addFileCollection(filePath string) {
 	m.lock.Lock()
@@ -224,10 +226,9 @@ func (m *profileManager) removeFiles(c []string) {
 	for _, f := range c {
 		err := os.Remove(f)
 		if err != nil {
-
 			// if first remove failed, perhaps it is because the writing goroutine has not close it yet.
 			// Wait 10ms before try again
-			time.Sleep(10 * time.Millisecond)
+			time.Sleep(100 * time.Millisecond)
 			err = os.Remove(f)
 			if err != nil {
 				m.errorLog("remove profile failed", err)
