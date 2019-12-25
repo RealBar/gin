@@ -280,7 +280,7 @@ func (m *profileManager) doCompress(readDir, storeDir string, w io.Writer) {
 	defer m.setLastCompressDay(time.Now().Day())
 	for _, f := range collection {
 		info, err := os.Stat(f)
-		if err != nil{
+		if err != nil {
 			errorLog(w, fmt.Sprintf("read status of file %q failed", f), err)
 			continue
 		}
