@@ -1,11 +1,9 @@
 package profile
 
 import (
-	"archive/tar"
 	"errors"
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"path"
 	"runtime/pprof"
@@ -30,14 +28,14 @@ var profileCollection = map[Profile]struct{}{Cpu: {}, Heap: {}, ThreadCreate: {}
 var profileOnceLock sync.Once
 var defaultFormat = &Format{
 	FileNameFormat: "{type}_{timestamp}.profile",
-	TimeFormat:     time.StampMilli,
+	TimeFormat:     "2006-01-02T15:04:05.000Z07:00",
 }
 var manager *profileManager
 
 type Format struct {
 	TimeFormat     string
 	FileNameFormat string // et :"{type}_{timestamp}.profile"
-	formatFunc     func(time.Time, Profile) string
+	formatFunc     func(string, Profile) string
 	lock           sync.Mutex
 }
 
@@ -50,60 +48,54 @@ func (f *Format) format(time1 time.Time, type1 Profile) string {
 		typeIdx := strings.Index(f.FileNameFormat, "{type}")
 		timestampIdx := strings.Index(f.FileNameFormat, "{timestamp}")
 		if typeIdx < timestampIdx {
-			f.formatFunc = func(time2 time.Time, type2 Profile) string {
+			f.formatFunc = func(time2 string, type2 Profile) string {
 				return fmt.Sprintf(tmp, type2, time2)
 			}
 		} else {
-			f.formatFunc = func(time2 time.Time, type2 Profile) string {
+			f.formatFunc = func(time2 string, type2 Profile) string {
 				return fmt.Sprintf(tmp, time2, type2)
 			}
 		}
 	}
-	return f.formatFunc(time1, type1)
+	return f.formatFunc(time1.Format(f.TimeFormat), type1)
 }
 
 type profileManager struct {
-	Option
-	ticker          *time.Ticker
-	lastCompressDay int
-	fileCollection  []string
-	archiveDir      string
-	err             error
-	lock            sync.Mutex
+	*Option
+	ticker         *time.Ticker
+	fileCollection []string
+	archiveDir     string
+	err            error
+	lock           sync.Mutex
 }
 
 type Option struct {
-	TotalDuration   time.Duration // do profiling for TotalDuration for every ProfileDuration,
-	ProfileDuration time.Duration
-	StoreDir        string  // place to store the profiles
-	Compress        bool    // whether to compress the profiles.By default the profiles are compressed daily by gzip.
-	FileFormat      *Format // profile file name format, if not set, defaultFormat will be used
-	LogOutput       io.Writer
-	ErrLogOutput    io.Writer
-	MaxHistory      int // num of days to save profiles
-	MaxFileNum      int // num of files
+	Y             time.Duration // do profiling for X for every Y,
+	X             time.Duration
+	StoreDir      string  // place to store the profiles
+	Compress      bool    // whether to compress the profiles.By default the profiles are compressed daily by gzip.
+	FileFormat    *Format // profile file name format, if not set, defaultFormat will be used
+	LogOutput     io.Writer
+	ErrLogOutput  io.Writer
+	ArchivePolicy ArchivePolicy
 }
 
 type Profile string
 
-func EnableProfile(opt Option, profiles ...Profile) error {
+func EnableProfile(opt *Option, profiles ...Profile) error {
 	if manager != nil {
 		return errors.New("cannot call EnableProfile repeatedly")
 	}
-	err := checkOpt(opt, profiles)
+	err := checkOpt(*opt, profiles)
 	if err != nil {
 		return err
 	}
 	profileOnceLock.Do(func() {
-		manager := &profileManager{
+		manager = &profileManager{
 			Option: opt,
 		}
-		if manager.FileFormat == nil {
-			manager.FileFormat = defaultFormat
-		}
-		manager.ticker = time.NewTicker(opt.TotalDuration)
+		manager.ticker = time.NewTicker(opt.Y)
 		if manager.Compress {
-			manager.lastCompressDay = time.Now().Day()
 			manager.archiveDir = path.Join(manager.StoreDir, "archive")
 			manager.err = createDirIfNotExists(manager.archiveDir)
 		}
@@ -111,19 +103,19 @@ func EnableProfile(opt Option, profiles ...Profile) error {
 	if manager.err != nil {
 		return err
 	}
-	go manager.doProfile()
+	go manager.doProfile(profiles...)
 	return nil
 }
 
 func checkOpt(opt Option, profiles []Profile) error {
-	if opt.TotalDuration <= 0 || opt.ProfileDuration <= 0 {
-		return errors.New("TotalDuration or ProfileDuration should not <= 0")
+	if opt.Y <= 0 || opt.X <= 0 {
+		return errors.New("Y or X should not <= 0")
 	}
-	if opt.TotalDuration <= opt.ProfileDuration {
-		return errors.New("TotalDuration should not <= ProfileDuration")
+	if opt.Y <= opt.X {
+		return errors.New("Y should not <= X")
 	}
-	if opt.TotalDuration <= 1*time.Second {
-		return errors.New("too frequent profile may impact the performance, TotalDuration is suggested to be > 1s")
+	if opt.Y <= 1*time.Second {
+		return errors.New("too frequent profile may impact the performance, Y is suggested to be > 1s")
 	}
 
 	for _, p := range profiles {
@@ -134,15 +126,18 @@ func checkOpt(opt Option, profiles []Profile) error {
 	if len(profiles) == 0 {
 		return errors.New("no profile set")
 	}
+	if opt.FileFormat == nil {
+		opt.FileFormat = defaultFormat
+	}
+	if opt.ArchivePolicy == nil {
+		opt.ArchivePolicy = &FileNumArchivePolicy{}
+	}
 	return createDirIfNotExists(opt.StoreDir)
 }
 
 func (m *profileManager) doProfile(profiles ...Profile) {
 	for {
 		<-m.ticker.C
-		if m.Compress && time.Now().Day() > m.getLastCompressDay() {
-			go m.doCompress(m.StoreDir, m.archiveDir, m.ErrLogOutput)
-		}
 		for _, p := range profiles {
 			switch p {
 			case Cpu, Trace:
@@ -151,6 +146,7 @@ func (m *profileManager) doProfile(profiles ...Profile) {
 				go m.doInstantProfile(p)
 			}
 		}
+		m.checkArchive()
 	}
 }
 
@@ -158,7 +154,7 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 	filePath := getFilePath(profile, m.StoreDir, m.FileFormat)
 	file, err := openFile(filePath)
 	if err != nil {
-		errorLog(m.ErrLogOutput, "open file failed", err)
+		m.errorLog("open file failed", err)
 		return
 	}
 	defer m.addFileCollection(filePath)
@@ -167,35 +163,38 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 	case Cpu:
 		err = pprof.StartCPUProfile(file)
 		if err != nil {
-			errorLog(m.ErrLogOutput, "StartCPUProfile failed", err)
+			m.errorLog("StartCPUProfile failed", err)
 			return
 		}
+		m.infoLog("StartCPUProfile succeed")
 		defer pprof.StopCPUProfile()
 	case Trace:
 		err = trace.Start(m.ErrLogOutput)
 		if err != nil {
-			errorLog(m.ErrLogOutput, "trace start failed", err)
+			m.errorLog("trace start failed", err)
 			return
 		}
+		m.infoLog("trace.Start succeed")
 		defer trace.Stop()
 	}
-	time.Sleep(m.ProfileDuration)
+	time.Sleep(m.X)
 }
 
 func (m *profileManager) doInstantProfile(profile Profile) {
 	filePath := getFilePath(profile, m.StoreDir, m.FileFormat)
 	file, err := openFile(filePath)
 	if err != nil {
-		errorLog(m.ErrLogOutput, "open file failed", err)
+		m.errorLog("open file failed", err)
 		return
 	}
 	defer file.Close()
 	p := pprof.Lookup(string(profile))
 	err = p.WriteTo(file, 0)
 	if err != nil {
-		errorLog(m.ErrLogOutput, "write profile failed", err)
+		m.errorLog("write profile failed", err)
 		return
 	}
+	m.infoLog(fmt.Sprintf("%s profile finished", string(profile)))
 	m.addFileCollection(filePath)
 }
 func (m *profileManager) addFileCollection(filePath string) {
@@ -208,31 +207,36 @@ func (m *profileManager) getFileCollection() []string {
 	defer m.lock.Unlock()
 	return m.fileCollection
 }
-func (m *profileManager) getLastCompressDay() int {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	return m.lastCompressDay
-}
-func (m *profileManager) setLastCompressDay(day int) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	m.lastCompressDay = time.Now().Day()
-}
+
 func (m *profileManager) removeCollection(oldColl []string) {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	currLen := len(m.fileCollection)
 	oldLen := len(oldColl)
-
 	if currLen == oldLen {
 		m.fileCollection = m.fileCollection[:0]
-	} else {
+	} else if currLen > oldLen {
 		copy(m.fileCollection, m.fileCollection[oldLen:])
 		m.fileCollection = m.fileCollection[:currLen-oldLen]
 	}
 }
+func (m *profileManager) removeFiles(c []string) {
+	for _, f := range c {
+		err := os.Remove(f)
+		if err != nil {
+
+			// if first remove failed, perhaps it is because the writing goroutine has not close it yet.
+			// Wait 10ms before try again
+			time.Sleep(10 * time.Millisecond)
+			err = os.Remove(f)
+			if err != nil {
+				m.errorLog("remove profile failed", err)
+			}
+		}
+	}
+}
 func openFile(filePath string) (*os.File, error) {
-	return os.OpenFile(filePath, os.O_CREATE|os.O_EXCL, 0644)
+	return os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 }
 
 func getFilePath(profile Profile, dir string, f *Format) string {
@@ -240,9 +244,14 @@ func getFilePath(profile Profile, dir string, f *Format) string {
 	return path.Join(dir, fileName)
 }
 
-func errorLog(w io.Writer, msg string, err error) {
-	_, _ = fmt.Fprintf(w, "[GIN] %v |%s|error:%s|",
+func (m *profileManager) errorLog(msg string, err error) {
+	_, _ = fmt.Fprintf(m.ErrLogOutput, "[GIN][ERROR] %v |%s|error:%s\n",
 		time.Now().Format("2006/01/02 - 15:04:05"), msg, err.Error())
+}
+
+func (m *profileManager) infoLog(msg string) {
+	_, _ = fmt.Fprintf(m.LogOutput, "[GIN][INFO] %v |%s\n",
+		time.Now().Format("2006/01/02 - 15:04:05"), msg)
 }
 
 func createDirIfNotExists(dir string) error {
@@ -262,47 +271,12 @@ func createDirIfNotExists(dir string) error {
 	return nil
 }
 
-func (m *profileManager) doCompress(readDir, storeDir string, w io.Writer) {
+func (m *profileManager) checkArchive() {
 	collection := m.getFileCollection()
-	if len(collection) == 0 {
-		return
-	}
-	defer m.removeCollection(collection)
-	filePath := path.Join(storeDir, time.Now().Format(time.RFC3339)+".tar")
-	file, err := os.Create(filePath)
-	if err != nil {
-		errorLog(w, "create tar file failed", err)
-		return
-	}
-	defer file.Close()
-	tarWriter := tar.NewWriter(file)
-	defer tarWriter.Close()
-	defer m.setLastCompressDay(time.Now().Day())
-	for _, f := range collection {
-		info, err := os.Stat(f)
-		if err != nil {
-			errorLog(w, fmt.Sprintf("read status of file %q failed", f), err)
-			continue
-		}
-		header, err := tar.FileInfoHeader(info, "")
-		if err != nil {
-			errorLog(w, fmt.Sprintf("read info header of file %q failed", f), err)
-			continue
-		}
-		err = tarWriter.WriteHeader(header)
-		if err != nil {
-			errorLog(w, fmt.Sprintf("write tar header info header of file %q failed", f), err)
-			return
-		}
-		data, err := ioutil.ReadFile(f)
-		if err != nil {
-			errorLog(w, fmt.Sprintf("read tar input file %q failed", f), err)
-			continue
-		}
-		_, err = tarWriter.Write(data)
-		if err != nil {
-			errorLog(w, fmt.Sprintf("write tar of file %q failed", f), err)
-			return
-		}
+	if m.ArchivePolicy.needArchive(collection) {
+		m.infoLog(fmt.Sprintf("start to archive files:%v", collection))
+		m.doArchive0(collection)
+		m.removeCollection(collection)
+		m.removeFiles(collection)
 	}
 }

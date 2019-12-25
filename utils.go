@@ -51,7 +51,7 @@ func WrapH(h http.Handler) HandlerFunc {
 }
 
 // EnablePeriodicallyProfile is a helper function to turn on and config periodical profiling.
-func EnablePeriodicallyProfile(opt profile.Option, profiles ...profile.Profile) error {
+func EnablePeriodicallyProfile(opt *profile.Option, profiles ...profile.Profile) error {
 	if opt.LogOutput == nil {
 		opt.LogOutput = DefaultWriter
 	}
