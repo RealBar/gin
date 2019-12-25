@@ -6,6 +6,7 @@ package gin
 
 import (
 	"encoding/xml"
+	"github.com/gin-gonic/gin/internal/profile"
 	"net/http"
 	"os"
 	"path"
@@ -47,6 +48,17 @@ func WrapH(h http.Handler) HandlerFunc {
 	return func(c *Context) {
 		h.ServeHTTP(c.Writer, c.Request)
 	}
+}
+
+// EnablePeriodicallyProfile is a helper function to turn on and config periodical profiling.
+func EnablePeriodicallyProfile(opt profile.Option, profiles ...profile.Profile) error {
+	if opt.LogOutput == nil {
+		opt.LogOutput = DefaultWriter
+	}
+	if opt.ErrLogOutput == nil {
+		opt.ErrLogOutput = DefaultErrorWriter
+	}
+	return profile.EnableProfile(opt, profiles...)
 }
 
 // H is a shortcut for map[string]interface{}
