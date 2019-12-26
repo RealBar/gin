@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path"
+	"path/filepath"
 	"runtime/pprof"
 	"runtime/trace"
 	"strings"
@@ -96,7 +96,7 @@ func EnableProfile(opt *Option, profiles ...Profile) error {
 		}
 		manager.ticker = time.NewTicker(opt.Y)
 		if manager.Compress {
-			manager.archiveDir = path.Join(manager.StoreDir, "archive")
+			manager.archiveDir = filepath.Join(manager.StoreDir, "archive")
 			manager.err = createDirIfNotExists(manager.archiveDir)
 			if manager.FileFormat == nil {
 				manager.FileFormat = defaultFormat
@@ -153,12 +153,18 @@ func (m *profileManager) doProfile(profiles ...Profile) {
 
 func (m *profileManager) doDurationProfile(profile Profile) {
 	filePath := getFilePath(profile, m.StoreDir, m.FileFormat)
-	file, err := openFile(filePath)
+	file, err := m.openFile(filePath)
 	if err != nil {
-		m.errorLog("open file failed", err)
+		m.errorLog(fmt.Sprintf("create profile %q failed",filePath), err)
 		return
 	}
-	defer file.Close()
+	defer func() {
+		if err := file.Close(); err != nil {
+			m.errorLog(fmt.Sprintf("close profile %q failed",filePath), err)
+			return
+		}
+
+	}()
 	switch profile {
 	case Cpu:
 		err = pprof.StartCPUProfile(file)
@@ -167,7 +173,6 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 			return
 		}
 		m.infoLog("StartCPUProfile succeed")
-		defer m.addFileCollection(filePath)
 		defer pprof.StopCPUProfile()
 	case Trace:
 		err = trace.Start(m.ErrLogOutput)
@@ -176,7 +181,6 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 			return
 		}
 		m.infoLog("trace.Start succeed")
-		defer m.addFileCollection(filePath)
 		defer trace.Stop()
 	}
 	time.Sleep(m.X)
@@ -184,12 +188,11 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 
 func (m *profileManager) doInstantProfile(profile Profile) {
 	filePath := getFilePath(profile, m.StoreDir, m.FileFormat)
-	file, err := openFile(filePath)
+	file, err := m.openFile(filePath)
 	if err != nil {
 		m.errorLog("open file failed", err)
 		return
 	}
-	defer m.addFileCollection(filePath)
 	defer file.Close()
 	p := pprof.Lookup(string(profile))
 	err = p.WriteTo(file, 0)
@@ -199,11 +202,7 @@ func (m *profileManager) doInstantProfile(profile Profile) {
 	}
 	m.infoLog(fmt.Sprintf("%s profile finished", string(profile)))
 }
-func (m *profileManager) addFileCollection(filePath string) {
-	m.lock.Lock()
-	defer m.lock.Unlock()
-	m.fileCollection = append(m.fileCollection, filePath)
-}
+
 func (m *profileManager) getFileCollection() []string {
 	m.lock.Lock()
 	defer m.lock.Unlock()
@@ -236,13 +235,13 @@ func (m *profileManager) removeFiles(c []string) {
 		}
 	}
 }
-func openFile(filePath string) (*os.File, error) {
+func (m *profileManager) openFile(filePath string) (*os.File, error) {
 	return os.OpenFile(filePath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0644)
 }
 
 func getFilePath(profile Profile, dir string, f *Format) string {
 	fileName := f.format(time.Now(), profile)
-	return path.Join(dir, fileName)
+	return filepath.Join(dir, fileName)
 }
 
 func (m *profileManager) errorLog(msg string, err error) {

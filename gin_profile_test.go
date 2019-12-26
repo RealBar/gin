@@ -2,12 +2,13 @@ package gin
 
 import (
 	"crypto/tls"
-	"fmt"
 	"github.com/gin-gonic/gin/internal/profile"
 	"github.com/stretchr/testify/assert"
 	"io/ioutil"
 	"math/rand"
 	"net/http"
+	"os"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -32,10 +33,11 @@ func TestProfile(t *testing.T) {
 		}
 		c.String(http.StatusOK, "it worked")
 	})
+	storeDir := filepath.Join(os.TempDir(), "profiles")
 	assert.NoError(t, EnablePeriodicallyProfile(&profile.Option{
 		Y:             10 * time.Second,
 		X:             3 * time.Second,
-		StoreDir:      "/tmp/profiles",
+		StoreDir:      storeDir,
 		Compress:      true,
 		ArchivePolicy: &profile.FileNumArchivePolicy{MaxFileNum: 5},
 	}, profile.Cpu, profile.Goroutine))
@@ -47,7 +49,6 @@ func TestProfile(t *testing.T) {
 		testConcurrentRequest(t, "http://localhost:5150/test", 4)
 	}()
 	time.Sleep(2 * time.Minute)
-	fmt.Println("Sleep finished")
 }
 
 func testConcurrentRequest(t *testing.T, url string, concurrency int) {
@@ -68,9 +69,9 @@ func testConcurrentRequest(t *testing.T, url string, concurrency int) {
 			}()
 		}
 		wa.Wait()
-		fmt.Printf("finished %d requests\n", concurrency)
 	}
 }
+
 func doRequest(t *testing.T, client *http.Client, url string) {
 	resp, err := client.Get(url)
 	assert.NoError(t, err)

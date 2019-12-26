@@ -1,13 +1,11 @@
 package profile
 
 import (
-	"archive/tar"
-	"bytes"
-	"compress/gzip"
+	"archive/zip"
 	"fmt"
 	"io/ioutil"
 	"os"
-	"path"
+	"path/filepath"
 	"time"
 )
 
@@ -49,60 +47,40 @@ func (f *TimeArchivePolicy) needArchive(fileCollection []string) bool {
 }
 
 func (m *profileManager) doArchive0(collection []string) {
-	buf := &bytes.Buffer{}
-	tarWriter := tar.NewWriter(buf)
-	defer func() {
-		if err := tarWriter.Close(); err != nil {
-			m.errorLog("close tar zipWriter failed", err)
-		}
-	}()
+	zipFilePath := filepath.Join(m.archiveDir, time.Now().Format(defaultTimeFormat)+".zip")
+	zipFile, err := os.Create(zipFilePath)
+	if err != nil {
+		m.errorLog("create archive file failed", err)
+		return
+	}
+	defer zipFile.Close()
+	zipWriter := zip.NewWriter(zipFile)
+	defer zipWriter.Close()
 	for _, f := range collection {
 		info, err := os.Stat(f)
 		if err != nil {
 			m.errorLog(fmt.Sprintf("read status of file %q failed", f), err)
 			continue
 		}
-		header, err := tar.FileInfoHeader(info, "")
+		fileHeader, err := zip.FileInfoHeader(info)
 		if err != nil {
-			m.errorLog(fmt.Sprintf("read info header of file %q failed", f), err)
+			m.errorLog(fmt.Sprintf("get fileHeader of %q failed", f), err)
 			continue
 		}
-		err = tarWriter.WriteHeader(header)
+		writer, err := zipWriter.CreateHeader(fileHeader)
 		if err != nil {
-			m.errorLog(fmt.Sprintf("write tar header info header of file %q failed", f), err)
-			return
+			m.errorLog(fmt.Sprintf("write fileHeader of %q failed", f), err)
+			continue
 		}
 		data, err := ioutil.ReadFile(f)
 		if err != nil {
-			m.errorLog(fmt.Sprintf("read tar input file %q failed", f), err)
-			continue
+			m.errorLog(fmt.Sprintf("read profile %q failed", f), err)
+			data = []byte{0}
 		}
-		_, err = tarWriter.Write(data)
+		_, err = writer.Write(data)
 		if err != nil {
-			m.errorLog(fmt.Sprintf("write tar of file %q failed", f), err)
+			m.errorLog(fmt.Sprintf("write zip of file %q failed", f), err)
 			return
 		}
-	}
-	filePath := path.Join(m.archiveDir, time.Now().Format(defaultTimeFormat)+".tar.gz")
-	file, err := os.Create(filePath)
-	if err != nil {
-		m.errorLog("create tar file failed", err)
-		return
-	}
-	defer file.Close()
-	zipWriter := gzip.NewWriter(file)
-	defer func() {
-		if err := zipWriter.Close(); err != nil {
-			m.errorLog("close zipWriter failed", err)
-		}
-	}()
-	_, err = zipWriter.Write(buf.Bytes())
-	if err != nil {
-		m.errorLog("write gzip file failed", err)
-		return
-	}
-	err =zipWriter.Flush()
-	if err != nil {
-		m.errorLog("flush gzip file failed", err)
 	}
 }
