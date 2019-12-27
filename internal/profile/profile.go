@@ -155,16 +155,10 @@ func (m *profileManager) doDurationProfile(profile Profile) {
 	filePath := getFilePath(profile, m.StoreDir, m.FileFormat)
 	file, err := m.openFile(filePath)
 	if err != nil {
-		m.errorLog(fmt.Sprintf("create profile %q failed",filePath), err)
+		m.errorLog(fmt.Sprintf("create profile %q failed", filePath), err)
 		return
 	}
-	defer func() {
-		if err := file.Close(); err != nil {
-			m.errorLog(fmt.Sprintf("close profile %q failed",filePath), err)
-			return
-		}
-
-	}()
+	defer m.closeFile(file, filePath)
 	switch profile {
 	case Cpu:
 		err = pprof.StartCPUProfile(file)
@@ -193,7 +187,7 @@ func (m *profileManager) doInstantProfile(profile Profile) {
 		m.errorLog("open file failed", err)
 		return
 	}
-	defer file.Close()
+	defer m.closeFile(file, filePath)
 	p := pprof.Lookup(string(profile))
 	err = p.WriteTo(file, 0)
 	if err != nil {
@@ -207,6 +201,15 @@ func (m *profileManager) getFileCollection() []string {
 	m.lock.Lock()
 	defer m.lock.Unlock()
 	return m.fileCollection
+}
+func (m *profileManager) closeFile(file *os.File, filePath string) {
+	m.lock.Lock()
+	defer m.lock.Unlock()
+	if err := file.Close(); err != nil {
+		m.errorLog(fmt.Sprintf("close profile %q failed", filePath), err)
+		return
+	}
+	m.fileCollection = append(m.fileCollection, filePath)
 }
 
 func (m *profileManager) removeCollection(oldColl []string) {
